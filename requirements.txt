@@ -1,0 +1,48 @@
+# ---- Core ----
+numpy
+pandas
+scipy
+scikit-learn
+pyarrow
+
+# ---- Visualization ----
+matplotlib
+seaborn
+
+# ---- Notebooks ----
+jupyterlab
+ipykernel
+
+# ---- Tree-based models ----
+lightgbm
+xgboost
+
+# ---- Classical / statistical time series ----
+statsmodels
+prophet
+statsforecast          # Nixtla: fast AutoARIMA / ETS
+
+# ---- Deep learning time series ----
+# neuralforecast gives you N-BEATS, NHITS, DLinear, PatchTST, TFT under ONE API,
+# with global (cross-series) training and exogenous features built in.
+torch
+neuralforecast         # Nixtla
+
+# ---- Foundation model (bonus, optional) ----
+# timesfm              # uncomment only if you attempt the TimesFM bonus
+
+# ---- Experiment tracking ----
+mlflow
+wandb
+
+# ---- Kaggle data ----
+kaggle
+
+# ---- Utilities ----
+tqdm
+joblib
+
+# TIP: the deep-learning stack (torch + neuralforecast) can conflict with
+# prophet/statsforecast on some machines. If installs fight each other, put the
+# DL libraries in a SEPARATE virtual environment. Once everything installs
+# cleanly, freeze exact versions:  pip freeze > requirements.lock.txt
