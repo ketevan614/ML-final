@@ -46,3 +46,5 @@ joblib
 # prophet/statsforecast on some machines. If installs fight each other, put the
 # DL libraries in a SEPARATE virtual environment. Once everything installs
 # cleanly, freeze exact versions:  pip freeze > requirements.lock.txt
+
+pip install python-dotenv
