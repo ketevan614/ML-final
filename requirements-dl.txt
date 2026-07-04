@@ -1,0 +1,42 @@
+# =============================================================================
+# DEEP-LEARNING environment  ->  install into a SEPARATE .venv-dl
+# N-BEATS / NHITS / DLinear / PatchTST / TFT via Nixtla's neuralforecast.
+#
+# WHY A SEPARATE ENV: installing neuralforecast together with prophet/
+# statsforecast makes pip's resolver backtrack and land on neuralforecast 0.1.0
+# (from 2021), which lacks every modern model. In its own env it resolves fine.
+#
+#   python -m venv .venv-dl
+#   .\.venv-dl\Scripts\Activate.ps1     # PowerShell
+#   pip install -r requirements-dl.txt
+#   python -m ipykernel install --user --name ml-final-dl --display-name "ML-final (DL)"
+#
+# If pip still backtracks on neuralforecast, install torch first, then nf:
+#   pip install torch
+#   pip install "neuralforecast>=1.7,<2"
+# =============================================================================
+
+# ---- Deep learning ----
+# neuralforecast 1.7.x has NBEATS, NHITS, DLinear, PatchTST and TFT, and is the
+# most stable line on Python 3.13 + torch 2.x. Pinning the lower bound stops the
+# resolver from collapsing back to 0.1.0.
+torch
+neuralforecast>=1.7,<2
+
+# ---- Shared data/feature libs (so features.py works in this env too) ----
+numpy
+pandas
+scikit-learn
+pyarrow
+
+# ---- Experiment tracking (log DL runs to the same MLflow/W&B) ----
+mlflow
+wandb
+
+# ---- Notebooks ----
+jupyterlab
+ipykernel
+matplotlib
+
+# ---- Foundation model (bonus, optional) ----
+# timesfm              # uncomment only if you attempt the TimesFM bonus
