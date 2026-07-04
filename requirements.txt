@@ -1,3 +1,14 @@
+# =============================================================================
+# CORE environment  ->  install into .venv
+# Everything EXCEPT the deep-learning stack (torch / neuralforecast), which
+# conflicts on resolution and lives in its own env (see requirements-dl.txt).
+#
+#   python -m venv .venv
+#   .\.venv\Scripts\Activate.ps1        # PowerShell
+#   pip install -r requirements.txt
+#   python -m ipykernel install --user --name ml-final --display-name "ML-final (core)"
+# =============================================================================
+
 # ---- Core ----
 numpy
 pandas
@@ -22,15 +33,6 @@ statsmodels
 prophet
 statsforecast          # Nixtla: fast AutoARIMA / ETS
 
-# ---- Deep learning time series ----
-# neuralforecast gives you N-BEATS, NHITS, DLinear, PatchTST, TFT under ONE API,
-# with global (cross-series) training and exogenous features built in.
-torch
-neuralforecast         # Nixtla
-
-# ---- Foundation model (bonus, optional) ----
-# timesfm              # uncomment only if you attempt the TimesFM bonus
-
 # ---- Experiment tracking ----
 mlflow
 wandb
@@ -48,3 +50,6 @@ joblib
 # cleanly, freeze exact versions:  pip freeze > requirements.lock.txt
 
 pip install python-dotenv
+# NOTE: the deep-learning models (N-BEATS, NHITS, DLinear, PatchTST, TFT) are in
+# a SEPARATE environment — see requirements-dl.txt. Mixing them here makes pip
+# backtrack and silently install a broken neuralforecast 0.1.0.

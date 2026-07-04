@@ -1,1 +1,31 @@
 .env
+# ---- Data (don't commit the Kaggle dataset) ----
+data/
+
+# ---- Models / experiment artifacts ----
+models/*.pkl
+models/*.joblib
+mlruns/
+mlartifacts/
+wandb/
+*.pkl
+*.joblib
+*.pt
+*.ckpt
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+.venv-dl/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---- Kaggle credentials (NEVER commit) ----
+kaggle.json
+
+# ---- OS / editors ----
+.DS_Store
+.idea/
+.vscode/
