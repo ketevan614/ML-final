@@ -36,6 +36,7 @@ statsforecast          # Nixtla: fast AutoARIMA / ETS
 # ---- Experiment tracking ----
 mlflow
 wandb
+dagshub
 
 # ---- Kaggle data ----
 kaggle
@@ -43,13 +44,14 @@ kaggle
 # ---- Utilities ----
 tqdm
 joblib
+optuna
+python-dotenv
 
 # TIP: the deep-learning stack (torch + neuralforecast) can conflict with
 # prophet/statsforecast on some machines. If installs fight each other, put the
 # DL libraries in a SEPARATE virtual environment. Once everything installs
 # cleanly, freeze exact versions:  pip freeze > requirements.lock.txt
 
-pip install python-dotenv
 # NOTE: the deep-learning models (N-BEATS, NHITS, DLinear, PatchTST, TFT) are in
 # a SEPARATE environment — see requirements-dl.txt. Mixing them here makes pip
 # backtrack and silently install a broken neuralforecast 0.1.0.

@@ -29,3 +29,11 @@ kaggle.json
 .DS_Store
 .idea/
 .vscode/
+
+# ---- Generated submissions / reports ----
+models/*.csv
+models/*.png
+models/*.html
+models/*.json
+submissions/
+lightning_logs/

@@ -32,6 +32,8 @@ pyarrow
 # ---- Experiment tracking (log DL runs to the same MLflow/W&B) ----
 mlflow
 wandb
+dagshub
+python-dotenv
 
 # ---- Notebooks ----
 jupyterlab
