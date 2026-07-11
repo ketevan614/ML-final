@@ -1,6 +1,4 @@
-# Feature Engineering
 
-ამ ფაილში მოკლედ არის აღწერილი ის feature-ები, რომლებიც დავამატეთ Walmart-ის გაყიდვების პროგნოზირებისთვის და რატომ.
 
 ## Calendar Features
 
