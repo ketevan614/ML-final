@@ -58,11 +58,26 @@ class NeuralForecastRawPyFunc(mlflow.pyfunc.PythonModel):
             nf[col] = values.to_numpy()
         return nf
 
+    @staticmethod
+    def _normalize_predictions(preds: pd.DataFrame) -> pd.DataFrame:
+        preds = preds.reset_index()
+        unnamed = [col for col in preds.columns if str(col).startswith("level_") or str(col) == "index"]
+        if unnamed:
+            preds = preds.drop(columns=unnamed)
+        return preds
+
     def predict(self, context, model_input: pd.DataFrame, params=None):
         futr_df = self._to_nixtla(model_input)
-        if not self.uses_exog:
-            futr_df = futr_df[["unique_id", "ds"]]
+        if self.uses_exog:
+            preds = self._normalize_predictions(self.neuralforecast_model.predict(futr_df=futr_df))
+        else:
+            preds = self._normalize_predictions(self.neuralforecast_model.predict())
 
-        preds = self.neuralforecast_model.predict(futr_df=futr_df)
-        values = preds[self.model_alias].to_numpy(dtype=float)
+        aligned = futr_df[["unique_id", "ds"]].merge(
+            preds[["unique_id", "ds", self.model_alias]],
+            on=["unique_id", "ds"],
+            how="left",
+        )
+        fallback = float(self.train_history_raw["Weekly_Sales"].mean())
+        values = aligned[self.model_alias].fillna(fallback).to_numpy(dtype=float)
         return np.clip(values, 0, None)
