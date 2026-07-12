@@ -1,446 +1,311 @@
-﻿# Walmart Store Sales Forecasting
+# Walmart Store Sales Forecasting
 
-Final machine-learning project for the Kaggle competition **Walmart Recruiting - Store Sales Forecasting**.
+Kaggle-ის შეჯიბრი [Walmart Recruiting: Store Sales Forecasting](https://www.kaggle.com/c/walmart-recruiting-store-sales-forecasting).
+მიზანი: 45 მაღაზიის დეპარტამენტების ყოველკვირეული გაყიდვების პროგნოზი 39 კვირით წინ.
 
-The goal is to predict weekly sales for each `Store-Dept-Date` row using historical sales, store metadata, holiday information, markdowns, and external economic variables. The final output is a Kaggle submission file with one prediction per row in `test.csv`.
+პროექტში შედარებულია ოთხი ოჯახის მოდელი (Tree-Based, Deep Learning, Classical, Foundation)
+ერთსა და იმავე მონაცემებზე, ერთი მეტრიკით და ერთი ვალიდაციის სქემით.
 
-## Current Status
+MLflow tracking: https://dagshub.com/karev23/ML-final.mlflow
 
-This README is written as the final report structure. Some result values are marked `TODO` because LightGBM, XGBoost, and N-BEATS still need to be trained or verified in DagsHub before the final winner can be selected.
+გუნდი: ქეთევან არევაძე (`karev23`), გიორგი აბაშიძე (`gabas22`).
 
-| Item | Status | Evidence |
+## 1. მონაცემები
+
+| | |
+|---|---|
+| სატრენინგო სტრიქონები | 421,570 |
+| სატესტო სტრიქონები | 115,064 |
+| სერიების რაოდენობა `(Store, Dept)` | 3,331 |
+| ისტორიის სიგრძე | 143 კვირა (2010-02-05 დან 2012-10-26 მდე) |
+| საპროგნოზო ჰორიზონტი | 39 კვირა |
+| უარყოფითი გაყიდვები | 1,285 სტრიქონი |
+
+ეს panel (multi-series) ამოცანაა: 3,331 დროითი მწკრივი, რომლებიც ერთსა და იმავე თარიღებს
+იზიარებენ. სერიების სიგრძე ძალიან არათანაბარია: მედიანა 143 კვირაა, მაგრამ მინიმუმი მხოლოდ
+1 კვირა. ეს ფაქტი პროექტის ბევრ გადაწყვეტილებას განსაზღვრავს.
+
+დამატებითი ცხრილები: `features.csv` (Temperature, Fuel_Price, CPI, Unemployment, MarkDown1-5)
+და `stores.csv` (Type, Size).
+
+## 2. მეტრიკა: WMAE
+
+```
+WMAE = Σ wᵢ · |yᵢ − ŷᵢ| / Σ wᵢ        wᵢ = 5,  თუ კვირა სადღესასწაულოა
+                                       wᵢ = 1,  სხვა შემთხვევაში
+```
+
+სადღესასწაულო კვირები 5-ჯერ იწონება. ეს ერთი დეტალი პროექტის თითქმის ყველა გადაწყვეტილებას
+განსაზღვრავს:
+
+- ხის მოდელებში სატრენინგო `sample_weight = 5` სადღესასწაულო სტრიქონებზე;
+- XGBoost-ში `objective="reg:absoluteerror"`, რადგან L1 loss პირდაპირ WMAE-ს ესადაგება, MSE კი არა;
+- მოდელები, რომლებმაც არ იციან, რომ კვირა Thanksgiving-ია, ზუსტად იქ ცდებიან, სადაც ჯარიმა
+  ყველაზე მძიმეა (იხ. PatchTST და TimesFM ქვემოთ).
+
+იმპლემენტაცია: `metrics.py`.
+
+## 3. Feature Engineering
+
+დეტალური აღწერა: `FEATURES.md`. კოდი: `features.py` (73 სვეტი).
+
+| ჯგუფი | Feature-ები |
+|---|---|
+| კალენდარი | `Year`, `Month`, `WeekOfYear`, `WeekSin/Cos`, `MonthSin/Cos` |
+| დღესასწაულები | `is_super_bowl`, `is_labor_day`, `is_thanksgiving`, `is_christmas`, `DaysToChristmas`, `is_pre_christmas` |
+| Markdown | `MarkDown1-5` და `*_missing` flag-ები, `TotalMarkdown`, `TotalMarkdown_log1p` |
+| გარემო | `Temperature`, `Fuel_Price`, `TempCold/Hot/Mild`, `TempComfortDistance`, `TemperatureStoreDeviation` |
+| ეკონომიკა | `CPI`, `Unemployment` და `*_missing` |
+| გაყიდვების ისტორია | `sales_lag_52`, `same_week_history_mean`, `store_dept_history_mean`, `dept_week_history_mean`, `store_week_history_mean` და `*_missing` |
+
+### 3.1. Leakage-ის მთავარი წესი
+
+სატესტო ჰორიზონტი 39 კვირაა. ბოლო სატესტო კვირის პროგნოზისას ხელთ გვაქვს მხოლოდ 39 კვირით
+ძველი ინფორმაცია. აქედან გამომდინარე გამოსადეგია მხოლოდ `lag >= 39`. `lag_1`, `lag_4`, `lag_12`
+დაუშვებელია, რადგან ისინი სატესტო პერიოდში უბრალოდ არ არსებობს.
+
+ამიტომ `sales_lag_52` ("იგივე კვირა შარშან") ერთადერთი ბუნებრივი და ამავე დროს უსაფრთხო lag-ია.
+ის ამ პროექტის ცენტრალური feature-ია.
+
+ვალიდაციისას history-ზე დაფუძნებული feature-ები აიგება მხოლოდ სატრენინგო ნაწილიდან:
+
+```python
+build_features(val.drop(columns=["Weekly_Sales"]), sales_history_df=train_fold)
+```
+
+ასე სავალიდაციო გაყიდვები საკუთარ feature-ებში ვერ მოხვდება, ანუ leakage გამორიცხულია.
+
+### 3.2. Feature Importance (XGBoost)
+
+| Feature | Importance |
+|---|---|
+| `store_dept_history_mean` | 0.274 |
+| `store_dept_history_mean_missing` | 0.090 |
+| `sales_lag_52_missing` | 0.072 |
+| `same_week_history_mean_missing` | 0.035 |
+| `dept_week_history_mean` | 0.034 |
+| `sales_lag_52` | 0.033 |
+| `Type_B` | 0.022 |
+
+საინტერესო დაკვირვება: `*_missing` flag-ები თითქმის ისეთივე მნიშვნელოვანია, როგორც თავად
+მნიშვნელობები. მოდელი სწავლობს, რომ "ამ სერიას გამოსადეგი ისტორია არ აქვს" თავისთავად ძლიერი
+სიგნალია, და ასეთ სტრიქონებზე fallback-საშუალოს იყენებს.
+
+## 4. ვალიდაცია
+
+Random K-Fold აქ დაუშვებელია, რადგან ის მომავლის ინფორმაციას წარსულში ატანს, ანუ პირდაპირ
+leakage-ს იწვევს. ვიყენებთ expanding window-ს უნიკალურ თარიღებზე (და არა სტრიქონებზე, რადგან
+panel-ია):
+
+| fold | სატრენინგო ისტორია | ვალიდაცია |
 |---|---|---|
-| SARIMA experiment | Done | `SARIMA_CrossValidation` logged 3 folds and `mean_subset_cv_wmae = 21215.70` |
-| SARIMA final run | Done | `SARIMA_Final` finished and logged `sarima_subset_forecast.csv`; not a production candidate |
-| DLinear final run | Done | `DLinear_Final` finished with `input_size = 26`, `max_steps = 500` |
-| DLinear bug fix | Done | final HPO params are converted to integers before building the PyTorch model |
-| Inference notebook | Prepared | `model_inference.ipynb` loads `models:/walmart-best/Production` and writes `models/best_model_submission.csv` |
-| Git ignore rules | Prepared | data, credentials, local MLflow folders, generated submissions, and model artifacts are ignored |
+| 1 | 26 კვირა | შემდეგი 39 კვირა |
+| 2 | 65 კვირა | შემდეგი 39 კვირა |
+| 3 | 104 კვირა | ბოლო 39 კვირა |
 
-Still required before final submission:
+იმპლემენტაცია: `validation.py` (`expanding_window_folds`, `holdout_split`).
 
-| Item | Status |
-|---|---|
-| LightGBM training and final metrics | TODO |
-| XGBoost training and final metrics | TODO |
-| N-BEATS training and final metrics | TODO |
-| DLinear CV/HPO metric copied from DagsHub | TODO |
-| Best model selected from full-data CV metrics | TODO |
-| Best model registered as `walmart-best` | TODO |
-| Final Kaggle score added | TODO |
+### PatchTST-ის გამონაკლისი
 
-## Dataset
+PatchTST-ს ერთი სატრენინგო ფანჯრისთვის სჭირდება `input_size + h` კვირა თითო სერიაზე.
+`h = 39`-ისა და სულ 143 კვირის პირობებში expanding window-ის არცერთ fold-ს არ ჰყოფნის ისტორია
+(26, 65, 104 კვირა). ამიტომ PatchTST იყენებს ერთ 39-კვირიან holdout-ს (104 სატრენინგო კვირა,
+`input_size = 52`).
 
-The Kaggle data contains:
+ორივე შემთხვევაში საქმე ეხება ერთსა და იმავე ბოლო 39 კვირას, ამიტომ expanding window-ის მე-3
+fold და PatchTST-ის holdout სრულად შედარებადი გაზომვებია. სწორედ ამას იყენებს ქვემოთ მოცემული
+მთავარი ცხრილი.
 
-| File | Purpose |
-|---|---|
-| `train.csv` | historical weekly sales with target `Weekly_Sales` |
-| `test.csv` | future rows where sales must be predicted |
-| `features.csv` | markdowns, fuel price, temperature, CPI, unemployment, holidays |
-| `stores.csv` | store type and store size |
-| `sampleSubmission.csv` | required Kaggle submission format |
+## 5. შედეგები
 
-The prediction grain is:
+### 5.1. მთავარი ცხრილი: ბოლო 39 კვირა (სრული panel, სრულად შედარებადი)
 
-```text
-Store + Dept + Date
-```
-
-## Metric
-
-The competition metric is **Weighted Mean Absolute Error**:
-
-```text
-WMAE = sum(w_i * |y_i - yhat_i|) / sum(w_i)
-
-w_i = 5 if IsHoliday = True
-w_i = 1 otherwise
-```
-
-Holiday weeks matter more because Walmart sales can spike around events such as Thanksgiving, Christmas, Labor Day, and the Super Bowl. Tree-based models can use holiday sample weights directly during training. All models are evaluated with the same WMAE function.
-
-## Validation Strategy
-
-Random splitting is not valid for this task because it would leak future information into training. The project uses expanding-window validation:
-
-```text
-Fold 1: train on earlier weeks -> validate on next 39 weeks
-Fold 2: train on a larger historical window -> validate on next 39 weeks
-Fold 3: train on an even larger window -> validate on next 39 weeks
-```
-
-The validation horizon is 39 weeks, matching the future forecasting period.
-
-## Feature Engineering
-
-Shared feature engineering is implemented mainly in `features.py`.
-
-| Feature group | Examples | Why used |
+| მოდელი | ოჯახი | WMAE |
 |---|---|---|
-| Calendar | year, month, ISO week, quarter, day-of-year | captures seasonality |
-| Cyclical time | `WeekSin`, `WeekCos`, `MonthSin`, `MonthCos` | represents repeated cycles smoothly |
-| Holidays | holiday flag and named holiday indicators | important because WMAE weights holidays 5x |
-| Store metadata | `Type`, `Size` | captures store format and scale |
-| Economic variables | `Temperature`, `Fuel_Price`, `CPI`, `Unemployment` | external demand signals |
-| Markdowns | `MarkDown1-5`, total markdown, missing flags | promotions affect weekly sales |
-| Historical sales | lag/year-over-year features and historical means | gives tabular models memory of previous demand |
+| LightGBM | Tree-Based | 1,608.5 |
+| XGBoost | Tree-Based | 1,780.1 |
+| N-BEATS | Deep Learning | 1,845.6 |
+| DLinear | Deep Learning | 2,482.7 |
+| PatchTST | Deep Learning | 2,581.9 |
 
-Leakage control:
+### 5.2. სრული Cross-Validation (3 fold-ის საშუალო)
 
-- Future target values are not used for test rows.
-- Lag features use known historical values only.
-- Expanding-window CV keeps validation dates strictly after training dates.
+| მოდელი | fold 1 (26კვ) | fold 2 (65კვ) | fold 3 (104კვ) | საშუალო |
+|---|---|---|---|---|
+| LightGBM | 2,836.7 | 1,944.5 | 1,608.5 | 2,129.9 |
+| XGBoost | 4,312.5 | 2,292.1 | 1,780.1 | 2,755.4 |
+| N-BEATS | 4,027.7 | 3,448.3 | 1,845.6 | 3,107.2 |
+| DLinear | 11,936.1 | 5,833.4 | 2,482.7 | 6,750.7 |
 
-## Models
+ყველა მოდელი მონოტონურად უმჯობესდება fold-იდან fold-ში. ეს შემთხვევითობა არ არის: რაც მეტი
+ისტორიაა, მით უფრო სავსეა `sales_lag_52` და history-საშუალოები. fold 1-ს მხოლოდ 26 კვირა აქვს,
+ანუ lag-52 პრაქტიკულად ცარიელია, და შედეგიც შესაბამისია.
 
-### LightGBM
+### 5.3. Subset-ის შედეგები (5 ყველაზე მსხვილი სერია)
 
-LightGBM is a gradient boosted decision tree model. It is included because Walmart forecasting is partly a tabular problem with strong nonlinear interactions between store, department, holiday, markdown, and economic features.
+Prophet და TimesFM ერთსა და იმავე 5 სერიაზეა გაზომილი, ამიტომ მხოლოდ ერთმანეთთან არიან
+შედარებადი. აბსოლუტური WMAE აქ ბევრად დიდია, რადგან სერიები დიდია. ეს მოდელის ხარისხზე
+არაფერს ამბობს.
 
-Strengths:
+| მოდელი | WMAE | რა იცის |
+|---|---|---|
+| TimesFM 2.5 (zero-shot) | 11,243.0 | ამ მონაცემების შესახებ არაფერი |
+| Prophet (per-series fit) | 12,328.4 | თითო სერიის 104 კვირა |
+| seasonal-naive (lag-52) | 16,730.8 | ერთი დაკვირვება შარშანდელიდან |
+| SARIMA (8 სერია) | 21,215.7 | თითო სერიის ისტორია |
 
-- strong with engineered tabular features;
-- handles nonlinear effects well;
-- fast enough for repeated CV and HPO;
-- supports holiday sample weights for WMAE alignment;
-- feature importance is useful for explanation.
+### 5.4. HPO
 
-Weaknesses:
+| მოდელი | HPO-მდე | HPO-ს შემდეგ |
+|---|---|---|
+| XGBoost | 2,794.9 | 2,755.4 (15 Optuna trial) |
+| PatchTST | 2,819.3 | 2,581.9 (5 Optuna trial) |
+| N-BEATS | 3,107.2 | 3,107.2 |
+| DLinear | 6,750.7 | 6,321.0 |
 
-- does not naturally understand time-series sequence dynamics;
-- depends on good lag/date features;
-- can miss patterns that are not represented in features.
+## 6. მთავარი დასკვნები
 
-Current status:
+### 6.1. Feature Engineering აჯობა არქიტექტურას
 
-```text
-TODO: train/verify LightGBM_CrossValidation, LightGBM_HPO, and LightGBM_Final.
-TODO: copy mean/best CV WMAE here.
-```
+ხის მოდელებმა ყველა deep learning მოდელი დაამარცხეს: LightGBM (1,608.5) საუკეთესო DL მოდელის
+N-BEATS-ის (1,845.6) წინააღმდეგ. PatchTST კი XGBoost-ს 45%-ით ჩამორჩება იდენტურ ფანჯარაზე
+(2,581.9 vs 1,780.1).
 
-### XGBoost
+მიზეზი პირდაპირია: PatchTST univariate არქიტექტურაა. `neuralforecast`-ის იმპლემენტაციაში
+`EXOGENOUS_FUTR = False`, და `futr_exog_list`-ის გადაცემა პირდაპირ იძლევა შეცდომას
+`PatchTST does not support future exogenous variables`. ანუ PatchTST ვერ ხედავს markdown-ებს,
+დღესასწაულებს, CPI-ს, ტემპერატურას და მაღაზიის ტიპს. ყველაფერი მხოლოდ გაყიდვების მწკრივიდან
+უნდა ამოიცნოს.
 
-XGBoost is another boosted tree model. It is included as a direct comparison to LightGBM.
+XGBoost-ს კი იგივე ინფორმაცია მზა სვეტად გადაეცემა: `sales_lag_52` და `store_dept_history_mean`.
+ხეს year-over-year სეზონურობის სწავლა არ სჭირდება, ის მას უბრალოდ კითხულობს.
 
-Strengths:
+WMAE ამ სხვაობას კიდევ უფრო ამძიმებს: სადღესასწაულო კვირები 5-ჯერ იწონება, ხოლო PatchTST-ს
+საერთოდ არ შეუძლია იცოდეს, რომ კვირა Thanksgiving-ია.
 
-- strong nonlinear tabular model;
-- robust and widely used;
-- useful check that results are not specific to one boosting implementation;
-- can also use holiday sample weights.
+დასკვნა: ამ მონაცემებზე feature engineering უფრო მნიშვნელოვანია, ვიდრე არქიტექტურა. სწორედ
+ამიტომ არიან ამ Kaggle-შეჯიბრის გამარჯვებულები gradient boosting, და არა ტრანსფორმერები.
 
-Weaknesses:
+### 6.2. რატომ სჯობს LightGBM XGBoost-ს
 
-- often slower than LightGBM on larger tabular data;
-- needs careful categorical encoding;
-- still depends on engineered time features.
+განსხვავება ყველაზე დიდია fold 1-ზე (2,836.7 vs 4,312.5), ანუ იქ, სადაც ისტორია ყველაზე მწირია.
+LightGBM კატეგორიულ სვეტებს native-ად ამუშავებს (pandas `Categorical`), XGBoost კი one-hot
+encoding-ს იყენებს. მწირი ისტორიის პირობებში ეს LightGBM-ს უპირატესობას აძლევს. LightGBM ასევე
+58 შერჩეულ feature-ს იყენებს 73-დან.
 
-Current status:
+### 6.3. Foundation მოდელმა Prophet დაამარცხა
 
-```text
-TODO: train/verify XGBoost_CrossValidation, XGBoost_HPO, and XGBoost_Final.
-TODO: copy mean/best CV WMAE here.
-```
+TimesFM-მა (11,243.0), რომელსაც ამ მონაცემების არც ერთი სტრიქონი უნახავს, დაამარცხა Prophet
+(12,328.4), რომელიც ინდივიდუალურად იყო დატრენინგებული თითოეულ ამ 5 სერიაზე. ის ასევე 32.8%-ით
+ჯობნის seasonal-naive baseline-ს.
 
-### DLinear
+მიზეზი: Prophet-ის მოდელი ფიქსირებული ფუნქციური ფორმაა (piecewise-linear trend, Fourier
+სეზონურობა, holiday dummy-ები). დაახლოებით 2-წლიანი ისტორიით მან წლიური სეზონური მრუდი
+თითოეული კალენდარული კვირის მხოლოდ ორი დაკვირვებიდან უნდა შეაფასოს. TimesFM კი მზა სეზონურ
+prior-ს იღებს უზარმაზარი კორპუსიდან და მას მხოლოდ ამოცნობა სჭირდება, და არა შეფასება.
+მოკლე ისტორიაზე ნასესხები სტრუქტურა სჯობს შეფასებულ სტრუქტურას.
 
-DLinear is a neural forecasting baseline from `neuralforecast`. It decomposes a series into trend and seasonal/residual parts and learns mostly linear mappings from an input window to the forecast horizon.
+### 6.4. Prophet-ს დღესასწაულებმა შედეგი გაუარესა
 
-Strengths:
-
-- fast and simple compared with larger neural models;
-- useful baseline for sequence learning;
-- global model across many Store-Dept series;
-- less complex than N-BEATS.
-
-Weaknesses:
-
-- mostly linear, so it can miss sharp nonlinear holiday/markdown effects;
-- weaker for categorical interactions than boosted trees;
-- sensitive to input window and training step choices.
-
-Current status:
-
-```text
-DLinear_Final: done.
-Best final params shown in DagsHub:
-- input_size = 26
-- max_steps = 500
-
-TODO: copy DLinear_CrossValidation mean_cv_wmae and DLinear_HPO best_mean_cv_wmae from DagsHub.
-```
-
-Implementation note:
-
-The final run originally failed because HPO values from a DataFrame could become floats, for example `26.0`. PyTorch layer sizes must be integers. The final cell now converts them:
-
-```python
-final_params = {
-    "input_size": int(final_params["input_size"]),
-    "max_steps": int(final_params["max_steps"]),
-}
-```
-
-### N-BEATS
-
-N-BEATS is a neural forecasting architecture based on fully connected blocks that produce backcast and forecast components. It is more expressive than DLinear and can model nonlinear temporal patterns.
-
-Strengths:
-
-- learns nonlinear temporal structure;
-- global model across many series;
-- trend/seasonality explanation is useful for the report.
-
-Weaknesses:
-
-- slower than DLinear;
-- more tuning-sensitive;
-- may still underperform tree models if markdown, holiday, and categorical effects dominate.
-
-Current status:
-
-```text
-TODO: train/verify NBEATS_CrossValidation, NBEATS_HPO, and NBEATS_Final.
-TODO: copy mean/best CV WMAE here.
-```
-
-### SARIMA / AutoARIMA
-
-SARIMA is a classical statistical time-series model:
-
-```text
-SARIMA(p,d,q)(P,D,Q,m)
-```
-
-For weekly Walmart data, yearly seasonality is represented with:
-
-```text
-m = 52
-```
-
-SARIMA is included as a theory-focused baseline, not as a production model.
-
-Strengths:
-
-- interpretable;
-- good for explaining autoregression, differencing, moving-average errors, and seasonality;
-- useful on a small number of high-volume series.
-
-Weaknesses:
-
-- does not scale well to thousands of Store-Dept series;
-- fits separate models instead of sharing information globally;
-- does not naturally use store metadata, markdowns, CPI, unemployment, or categorical interactions;
-- not suitable as the final production model for this project.
-
-Verified SARIMA result:
-
-| Metric | Value |
-|---|---:|
-| `fold_1_subset_wmae` | 29620.60 |
-| `fold_2_subset_wmae` | 19762.93 |
-| `fold_3_subset_wmae` | 14263.56 |
-| `mean_subset_cv_wmae` | 21215.70 |
-
-Conclusion: SARIMA is complete as a **theory-focused subset baseline** and is intentionally marked `production_candidate = False`.
-
-## Experiment Tracking
-
-Experiments are tracked in DagsHub MLflow:
-
-```python
-import dagshub
-
-dagshub.init(repo_owner="karev23", repo_name="ML-final", mlflow=True)
-```
-
-Expected MLflow experiments:
-
-| Experiment | Purpose |
+| Prophet კონფიგურაცია | subset WMAE |
 |---|---|
-| `LightGBM_Training` | boosted tree candidate |
-| `XGBoost_Training` | boosted tree comparison |
-| `DLinear_Training` | simple neural forecasting baseline |
-| `NBEATS_Training` | more expressive neural forecasting model |
-| `SARIMA_Training` | classical subset baseline |
+| მხოლოდ წლიური სეზონურობა | 12,328.4 |
+| და 4 Walmart დღესასწაული | 13,376.1 |
 
-Each model notebook follows this stage structure:
+შედეგად `USE_HOLIDAYS = False`.
 
-```text
-*_Cleaning
-*_Feature_Selection
-*_CrossValidation
-*_HPO
-*_Final
-```
+ეს კონტრინტუიციურია, რადგან WMAE ხომ სწორედ სადღესასწაულო კვირებს იწონის 5-ჯერ. მიზეზი ისევ
+მონაცემების სიმცირეა: 143 კვირაში თითოეული დღესასწაული მხოლოდ 2-ჯერ გვხვდება, ამიტომ holiday
+dummy ორ დაკვირვებაზე ფიტდება და overfit-ს იწვევს.
 
-SARIMA is slightly different because AutoARIMA performs its own internal order search and the final artifact is a subset forecast CSV rather than a production pyfunc model.
+ეს ზუსტად აჩვენებს განსხვავებას global და per-series მიდგომებს შორის: XGBoost-ის
+`is_thanksgiving` flag მუშაობს, რადგან ის დღესასწაულის ეფექტს 3,331-ვე სერიაზე ერთდროულად
+სწავლობს. Prophet კი თითო სერიას იზოლირებულად უყურებს, და საკმარისი მონაცემი არ რჩება.
 
-## Results Table
+### 6.5. Prophet-ის მასშტაბირების ფასი
 
-This table should be completed after all remaining models finish training.
+Prophet თითო სერიაზე ცალკე მოდელს ფიტავს. რეგისტრირებული `Prophet_Walmart`-ის
+`subset_coverage = 0.17%`, ანუ მას რეალური Prophet-პროგნოზი მხოლოდ სატესტო სტრიქონების
+0.17%-ისთვის აქვს. დანარჩენ 99.83%-ზე ის ისტორიულ საშუალოს აბრუნებს.
 
-| Model | Validation scope | Main metric | Value | Production candidate? | Notes |
-|---|---|---|---:|---|---|
-| LightGBM | full data | `best_mean_cv_wmae` or `mean_cv_wmae` | TODO | yes | likely strongest tabular model |
-| XGBoost | full data | `wmae_cv_best` or `wmae_cv_mean` | TODO | yes | tree comparison against LightGBM |
-| DLinear | full data | `best_mean_cv_wmae` / `mean_cv_wmae` | TODO | maybe | final run completed with `input_size=26`, `max_steps=500` |
-| N-BEATS | full data | `best_mean_cv_wmae` / `mean_cv_wmae` | TODO | maybe | pending training |
-| SARIMA | subset only | `mean_subset_cv_wmae` | 21215.70 | no | not directly comparable to full-data models |
+ამიტომ `submission_prophet.csv`-ის Kaggle-ქულა არ არის Prophet-ის შედეგი. ის პრაქტიკულად
+საშუალოს baseline-ს ზომავს. Prophet-ის ერთადერთი სანდო რიცხვები subset-ის შედეგებია.
 
-Selection rule:
+ეს ხარვეზი კი არა, არამედ განცხადების "Prophet არ მასშტაბირდება 3,331-სერიან panel-ზე"
+რიცხვად გადაქცევაა.
 
-```text
-Choose the lowest full-data CV WMAE among LightGBM, XGBoost, DLinear, and N-BEATS.
-Do not choose SARIMA as the final model because it is subset-only.
-```
+## 7. MLflow და Model Registry
 
-## Final Model Registry
+თითო არქიტექტურაზე ერთი experiment, შიგნით ეტაპობრივი run-ები:
 
-After the best model is selected, register it in MLflow Model Registry as:
+| Experiment | Run-ები |
+|---|---|
+| `LightGBM_Training` | `Cleaning`, `Feature_Selection`, `CrossValidation` |
+| `XGBoost_Training` | `Cleaning`, `Feature_Selection`, `CrossValidation`, `HPO` (15 nested trial), `Final` |
+| `NBEATS_Training` | `Cleaning`, `Feature_Selection`, `CrossValidation`, `HPO` |
+| `DLinear_Training` | `Cleaning`, `Feature_Selection`, `CrossValidation`, `HPO`, `Final` |
+| `PatchTST_Training` | `DataPrep`, `CrossValidation`, `HPO` (5 nested trial), `Final` |
+| `SARIMA_Training` | `Cleaning`, `CrossValidation`, `Final` |
+| `Prophet_Training` | `SubsetSelection`, `Yearly`, `Holidays`, `Final` |
+| `TimesFM_Training` | `ZeroShot`, `Analysis` |
 
-```text
-walmart-best
-```
+### Raw-test კონტრაქტი
 
-Then promote or alias the selected version as the production/champion model.
+რეგისტრირებული მოდელი პირდაპირ raw სატესტო სტრიქონებზე მუშაობს: `Store`, `Dept`, `Date`,
+`IsHoliday`. მომხმარებელს არანაირი preprocessing არ სჭირდება, რადგან მოდელი თავად აკეთებს
+merge-ს, feature-ების აგებას და სვეტების გასწორებას.
 
-Current status:
+| რეგისტრირებული მოდელი | Wrapper | ფაილი |
+|---|---|---|
+| `XGBoost_Walmart` | sklearn `Pipeline`, `WalmartRegressor` | `pipeline.py` |
+| `PatchTST_Walmart` | `NeuralForecastRawPyFunc` | `neuralforecast_pyfunc.py` |
+| `Prophet_Walmart` | `ProphetSubsetPyFunc` | `prophet_pyfunc.py` |
+| `walmart-best` | საუკეთესო მოდელი (champion) | |
 
-```text
-TODO: wait until LightGBM, XGBoost, and N-BEATS results are available.
-TODO: register the winning full-data model as walmart-best.
-```
+ჩატვირთვა: `model_inference.ipynb`.
 
-## Inference
-
-The final inference notebook is:
-
-```text
-model_inference.ipynb
-```
-
-It loads the registered best model:
-
-```python
-MODEL_URI = "models:/walmart-best/Production"
-model = mlflow.pyfunc.load_model(MODEL_URI)
-```
-
-It writes:
+## 8. რეპოზიტორიის სტრუქტურა
 
 ```text
-models/best_model_submission.csv
-```
-
-This step should be run only after `walmart-best` is registered.
-
-## How To Run In Colab
-
-Clone the repo:
-
-```python
-%cd /content
-
-import os
-
-if not os.path.exists("/content/ML-final"):
-    !git clone https://github.com/ketevan614/ML-final.git
-
-%cd /content/ML-final
-```
-
-Install dependencies:
-
-```python
-!pip -q install -r requirements.txt
-```
-
-For neural models:
-
-```python
-!pip -q install -r requirements-dl.txt
-```
-
-Connect DagsHub:
-
-```python
-import dagshub
-import mlflow
-
-dagshub.init(
-    repo_owner="karev23",
-    repo_name="ML-final",
-    mlflow=True,
-)
-
-print("MLflow tracking URI:", mlflow.get_tracking_uri())
-```
-
-Set Kaggle credentials with Colab Secrets:
-
-```python
-import os
-from google.colab import userdata
-
-os.environ["KAGGLE_USERNAME"] = userdata.get("KAGGLE_USERNAME")
-os.environ["KAGGLE_KEY"] = userdata.get("KAGGLE_KEY")
-```
-
-Download data:
-
-```python
-!mkdir -p data
-!kaggle competitions download -c walmart-recruiting-store-sales-forecasting -p data
-!unzip -o "data/*.zip" -d data
-!unzip -o "data/*.csv.zip" -d data
-!ls -lh data
-```
-
-Expected files:
-
-```text
-train.csv
-test.csv
-features.csv
-stores.csv
-sampleSubmission.csv
-```
-
-## Repository Structure
-
-```text
-.
-├── dataloader.py
-├── features.py
-├── metrics.py
-├── validation.py
-├── neuralforecast_pyfunc.py
-├── model_inference.ipynb
+├── dataloader.py              # load_raw, merge_all, make_submission
+├── features.py                # build_features, 73 სვეტი
+├── metrics.py                 # wmae
+├── validation.py              # expanding_window_folds, holdout_split
+├── pipeline.py                # XGBoost-ის raw-to-prediction Pipeline
+├── neuralforecast_pyfunc.py   # PatchTST / N-BEATS / DLinear pyfunc
+├── prophet_pyfunc.py          # Prophet subset pyfunc
+├── model_inference.ipynb      # Model Registry-დან საუკეთესო მოდელის ჩატვირთვა
 ├── models/
 │   ├── model_experiment_LightGBM.ipynb
 │   ├── model_experiment_XGBoost.ipynb
-│   ├── model_experiment_DLinear.ipynb
 │   ├── model_experiment_NBEATS.ipynb
-│   └── model_experiment_SARIMA.ipynb
-├── requirements.txt
-├── requirements-dl.txt
-└── README.md
+│   ├── model_experiment_DLinear.ipynb
+│   ├── model_experiment_PatchTST.ipynb
+│   ├── model_experiment_SARIMA.ipynb
+│   ├── model_experiment_Prophet.ipynb
+│   └── model_experiment_TimesFM.ipynb
+├── FEATURES.md                # feature-ების დეტალური აღწერა
+├── EXPERIMENTS.md             # ექსპერიმენტების რეესტრი
+├── requirements.txt           # ხის და კლასიკური მოდელები
+└── requirements-dl.txt        # deep learning მოდელები
 ```
 
-## Final Checklist
+## 9. გაშვება
 
-- [x] SARIMA subset baseline logged.
-- [x] DLinear final run completed.
-- [x] DLinear final parameter type bug fixed.
-- [x] DagsHub setup documented.
-- [x] Kaggle setup documented.
-- [x] Inference notebook prepared.
-- [ ] LightGBM final run completed.
-- [ ] XGBoost final run completed.
-- [ ] N-BEATS final run completed.
-- [ ] Full results table filled.
-- [ ] Best model registered as `walmart-best`.
-- [ ] Final inference submission generated.
-- [ ] Kaggle score added.
+ექსპერიმენტები Google Colab-ზეა გაშვებული. თითოეული notebook თვითკმარია.
+
+1. გახსენით notebook Colab-ში, GitHub-იდან.
+2. Secrets პანელში ჩართეთ Notebook access ორივესთვის:
+   - `KAGGLE_JSON`, Kaggle API key (`kaggle.json`-ის შიგთავსი)
+   - `DAGSHUB_TOKEN`, DagsHub access token
+3. Runtime, Run all.
+
+პირველი უჯრა თავად აკლონებს რეპოს, დააინსტალირებს დამოკიდებულებებს, ჩამოტვირთავს Kaggle-ის
+მონაცემებს და დააკავშირებს MLflow-ს DagsHub-თან.
+
+ლოკალურად:
+
+```bash
+pip install -r requirements.txt        # ხის და კლასიკური მოდელები
+pip install -r requirements-dl.txt     # deep learning მოდელები
+```
