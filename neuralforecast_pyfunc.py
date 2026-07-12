@@ -27,6 +27,7 @@ class NeuralForecastRawPyFunc(mlflow.pyfunc.PythonModel):
         train_history_raw: pd.DataFrame,
         model_alias: str,
         uses_exog: bool = True,
+        exog_cols: list | None = None,
     ):
         self.neuralforecast_model = neuralforecast_model
         self.features_df = features_df
@@ -34,28 +35,25 @@ class NeuralForecastRawPyFunc(mlflow.pyfunc.PythonModel):
         self.train_history_raw = train_history_raw
         self.model_alias = model_alias
         self.uses_exog = uses_exog
+        self.exog_cols = list(exog_cols or [])
 
     def _to_nixtla(self, raw_frame: pd.DataFrame) -> pd.DataFrame:
-        raw_frame = raw_frame.copy()
-        merged = merge_all(raw_frame, self.features_df, self.stores_df)
-        history_merged = merge_all(self.train_history_raw, self.features_df, self.stores_df)
-        X = build_features(
-            merged,
-            sales_history_df=history_merged,
-            encode_categoricals=True,
-        )
-
         nf = pd.DataFrame(
             {
                 "unique_id": raw_frame["Store"].astype(str) + "_" + raw_frame["Dept"].astype(str),
                 "ds": pd.to_datetime(raw_frame["Date"]),
             }
         )
+        if not self.exog_cols:  # univariate model (e.g. PatchTST): no covariates to build
+            return nf
+
+        merged = merge_all(raw_frame.copy(), self.features_df, self.stores_df)
+        X = build_features(merged, sales_history_df=None, encode_categoricals=True)
+        X = X.select_dtypes(include=[np.number]).astype("float32")
+        # exactly the columns the model was fitted on, in the same order
+        X = X.reindex(columns=self.exog_cols, fill_value=0)
         for col in X.columns:
-            values = X[col]
-            if str(values.dtype) == "category":
-                values = values.astype(str)
-            nf[col] = values.to_numpy()
+            nf[col] = X[col].to_numpy()
         return nf
 
     @staticmethod
